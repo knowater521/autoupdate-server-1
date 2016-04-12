@@ -1,9 +1,10 @@
-package server
+package main
 
 import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
@@ -20,22 +21,23 @@ type Patch struct {
 	File    string
 }
 
-const (
-	patchesDirectory = "patches/"
-)
-
-func init() {
-	err := os.MkdirAll(patchesDirectory, os.ModeDir|0700)
-	if err != nil {
-		log.Fatalf("Could not create directory for storing patches: %q", err)
-	}
-}
-
 func fileExists(s string) bool {
 	if _, err := os.Stat(s); err == nil {
 		return true
 	}
 	return false
+}
+
+func dirExists(dir string) bool {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	if fi.IsDir() {
+		return true
+	} else {
+		return false
+	}
 }
 
 func fileHash(s string) string {
@@ -79,7 +81,7 @@ func bspatch(oldfile string, newfile string, patchfile string) (err error) {
 	return nil
 }
 
-func bsdiff(oldfile string, newfile string) (patchfile string, err error) {
+func bsdiff(oldfile string, newfile string, patchDir string) (patchfile string, err error) {
 
 	if !fileExists(oldfile) {
 		return "", fmt.Errorf("File %s does not exist.", oldfile)
@@ -92,7 +94,7 @@ func bsdiff(oldfile string, newfile string) (patchfile string, err error) {
 	oldfileHash := fileHash(oldfile)
 	newfileHash := fileHash(newfile)
 
-	patchfile = patchesDirectory + fmt.Sprintf("%x", sha256.Sum256([]byte(oldfileHash+"|"+newfileHash)))
+	patchfile = patchDir + fmt.Sprintf("%x", sha256.Sum256([]byte(oldfileHash+"|"+newfileHash)))
 
 	if fileExists(patchfile) {
 		// Patch already exists, no need to compute it again.
@@ -114,21 +116,21 @@ func bsdiff(oldfile string, newfile string) (patchfile string, err error) {
 }
 
 // generatePatch compares the contents of two URLs and generates a patch.
-func generatePatch(oldfileURL string, newfileURL string) (p *Patch, err error) {
+func generatePatch(oldfileURL string, newfileURL string, assetDir string, patchDir string) (p *Patch, err error) {
 	generatePatchMu.Lock()
 	defer generatePatchMu.Unlock()
 
 	p = new(Patch)
 
-	if p.oldfile, err = downloadAsset(oldfileURL); err != nil {
+	if p.oldfile, err = downloadAsset(oldfileURL, assetDir); err != nil {
 		return nil, err
 	}
 
-	if p.newfile, err = downloadAsset(newfileURL); err != nil {
+	if p.newfile, err = downloadAsset(newfileURL, assetDir); err != nil {
 		return nil, err
 	}
 
-	if p.File, err = bsdiff(p.oldfile, p.newfile); err != nil {
+	if p.File, err = bsdiff(p.oldfile, p.newfile, patchDir); err != nil {
 		return nil, err
 	}
 

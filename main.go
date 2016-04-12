@@ -1,36 +1,46 @@
 package main
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"flag"
+	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/getlantern/autoupdate-server/server"
-	"github.com/getlantern/golog"
+	"github.com/yinghuocho/autoupdate-server/args"
+)
+
+const (
+	githubRefreshTime     = time.Minute * 10
+	localPatchesDirectory = "./patches/"
 )
 
 var (
-	flagPrivateKey         = flag.String("k", "", "Path to private key.")
-	flagLocalAddr          = flag.String("l", ":6868", "Local bind address.")
-	flagPublicAddr         = flag.String("p", "http://127.0.0.1:6868/", "Public address.")
-	flagGithubOrganization = flag.String("o", "getlantern", "Github organization.")
-	flagGithubProject      = flag.String("n", "lantern", "Github project name.")
+	flagPrivateKey         = flag.String("k", "./private.pem", "Path to private key.")
+	flagLocalAddr          = flag.String("l", "127.0.0.1:6868", "Local bind address.")
+	flagPublicAddr         = flag.String("p", "https://update.gofirefly.org/", "Public address.")
+	flagGithubOrganization = flag.String("o", "yinghuocho", "Github organization.")
+	flagGithubProject      = flag.String("n", "firefly-proxy", "Github project name.")
+	flagAssetDir           = flag.String("asset", "./assets/", "asset directory.")
+	flagPatchDir           = flag.String("patch", "./patches/", "patch directory.")
 	flagHelp               = flag.Bool("h", false, "Shows help.")
 )
 
 var (
-	log            = golog.LoggerFor("autoupdate-server")
-	releaseManager *server.ReleaseManager
+	releaseManager *ReleaseManager
 )
 
-type updateHandler struct {
-}
+type updateHandler struct{}
 
 // updateAssets checks for new assets released on the github releases page.
 func updateAssets() error {
-	log.Debug("Updating assets...")
+	log.Printf("Updating assets...")
 	if err := releaseManager.UpdateAssetsMap(); err != nil {
 		return err
 	}
@@ -43,30 +53,24 @@ func backgroundUpdate() {
 		time.Sleep(githubRefreshTime)
 		// Updating assets...
 		if err := updateAssets(); err != nil {
-			log.Debugf("updateAssets: %s", err)
+			log.Printf("updateAssets: %s", err)
 		}
 	}
 }
 
 func (u *updateHandler) closeWithStatus(w http.ResponseWriter, status int) {
 	w.WriteHeader(status)
-	if _, err := w.Write([]byte(http.StatusText(status))); err != nil {
-		log.Debugf("Unable to write status: %v", err)
-	}
+	w.Write([]byte(http.StatusText(status)))
 }
 
 func (u *updateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var err error
-	var res *server.Result
+	var res *args.Result
 
 	if r.Method == "POST" {
-		defer func() {
-			if err := r.Body.Close(); err != nil {
-				log.Debugf("Unable to close request body: %v", err)
-			}
-		}()
+		defer r.Body.Close()
 
-		var params server.Params
+		var params args.Params
 		decoder := json.NewDecoder(r.Body)
 
 		if err = decoder.Decode(&params); err != nil {
@@ -75,18 +79,14 @@ func (u *updateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if res, err = releaseManager.CheckForUpdate(&params); err != nil {
-			log.Debugf("CheckForUpdate failed with error: %q", err)
-			if err == server.ErrNoUpdateAvailable {
-				log.Debugf("Got query from client %q/%q, no update available.", params.AppVersion, params.OS)
+			log.Printf("CheckForUpdate failed with error: %q", err)
+			if err == ErrNoUpdateAvailable {
 				u.closeWithStatus(w, http.StatusNoContent)
 				return
 			}
-			log.Debugf("Got query from client %q/%q: %q.", err)
 			u.closeWithStatus(w, http.StatusExpectationFailed)
 			return
 		}
-
-		log.Debugf("Got query from client %q/%q, resolved to upgrade to %q using %q strategy.", params.AppVersion, params.OS, res.Version, res.PatchType)
 
 		if res.PatchURL != "" {
 			res.PatchURL = *flagPublicAddr + res.PatchURL
@@ -101,41 +101,58 @@ func (u *updateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		w.WriteHeader(http.StatusOK)
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write(content); err != nil {
-			log.Debugf("Unable to write response: %v", err)
-		}
+		w.Write(content)
 		return
 	}
 	u.closeWithStatus(w, http.StatusNotFound)
 	return
 }
 
+func loadPrivateKey(filename string) (*rsa.PrivateKey, error) {
+	data, e := ioutil.ReadFile(filename)
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("couldn't decode PEM file")
+	}
+	privKey, e := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if e != nil {
+		return nil, e
+	}
+	return privKey, nil
+}
+
 func main() {
-
-	// Parsing flags
 	flag.Parse()
-
 	if *flagHelp || *flagPrivateKey == "" {
 		flag.Usage()
 		os.Exit(0)
 	}
-
-	server.SetPrivateKey(*flagPrivateKey)
+	privKey, e := loadPrivateKey(*flagPrivateKey)
+	if e != nil {
+		log.Fatalf("fail to load private key: %s", e)
+	}
+	if !dirExists(*flagAssetDir) {
+		e = os.MkdirAll(*flagAssetDir, 0755)
+		if e != nil {
+			log.Fatalf("fail to create asset dir: %s", e)
+		}
+	}
+	if !dirExists(*flagPatchDir) {
+		e = os.MkdirAll(*flagPatchDir, 0755)
+		if e != nil {
+			log.Fatalf("fail to create patch dir: %s", e)
+		}
+	}
 
 	// Creating release manager.
-	log.Debug("Starting release manager.")
-	releaseManager = server.NewReleaseManager(*flagGithubOrganization, *flagGithubProject)
-	// Getting assets...
-	if err := updateAssets(); err != nil {
-		// In this case we will not be able to continue.
-		log.Fatal(err)
-	}
+	log.Printf("Starting release manager.")
+	releaseManager = NewReleaseManager(*flagGithubOrganization, *flagGithubProject, *flagAssetDir, *flagPatchDir, privKey)
+	updateAssets()
 
 	// Setting a goroutine for pulling updates periodically
 	go backgroundUpdate()
 
 	mux := http.NewServeMux()
-
 	mux.Handle("/update", new(updateHandler))
 	mux.Handle("/patches/", http.StripPrefix("/patches/", http.FileServer(http.Dir(localPatchesDirectory))))
 
@@ -144,10 +161,8 @@ func main() {
 		Handler: mux,
 	}
 
-	log.Debugf("Starting up HTTP server at %s.", *flagLocalAddr)
-
+	log.Printf("Starting up HTTP server at %s.", *flagLocalAddr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("ListenAndServe: ", err)
 	}
-
 }

@@ -1,4 +1,4 @@
-package server
+package main
 
 import (
 	"compress/bzip2"
@@ -10,20 +10,9 @@ import (
 	"path"
 )
 
-const (
-	assetsDirectory = "assets/"
-)
-
-func init() {
-	err := os.MkdirAll(assetsDirectory, os.ModeDir|0700)
-	if err != nil {
-		log.Fatalf("Could not create directory for storing assets: %q", err)
-	}
-}
-
 // downloadAsset grabs the contents of the body of the given URL and stores
 // then into $ASSETS_DIRECTORY/$BASENAME.SHA256_SUM($URL)
-func downloadAsset(uri string) (localfile string, err error) {
+func downloadAsset(uri string, assetDir string) (localfile string, err error) {
 	basename := path.Base(uri)
 	fileExt := path.Ext(basename)
 
@@ -35,7 +24,7 @@ func downloadAsset(uri string) (localfile string, err error) {
 		basename = basename[:60]
 	}
 
-	localfile = assetsDirectory + fmt.Sprintf("%s.%x", basename, sha256.Sum256([]byte(uri)))
+	localfile = assetDir + fmt.Sprintf("%s.%x", basename, sha256.Sum256([]byte(uri)))
 
 	if !fileExists(localfile) {
 		var body io.Reader
