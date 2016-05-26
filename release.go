@@ -339,11 +339,6 @@ func (g *ReleaseManager) CheckForUpdate(p *args.Params) (res *args.Result, err e
 		return nil, fmt.Errorf("Could not lookup for updates: %s", err)
 	}
 
-	// No update available.
-	if update.v.LTE(appVersion) {
-		return nil, ErrNoUpdateAvailable
-	}
-
 	// Looking for the asset thay matches the current app checksum.
 	var current *Asset
 	if current, err = g.lookupAssetWithChecksum(p.OS, p.Arch, p.Checksum); err != nil {
@@ -358,6 +353,11 @@ func (g *ReleaseManager) CheckForUpdate(p *args.Params) (res *args.Result, err e
 		}
 
 		return r, nil
+	}
+
+	// No update available.
+	if update.v.LTE(appVersion) {
+		return nil, ErrNoUpdateAvailable
 	}
 
 	// Generate a binary diff of the two assets.

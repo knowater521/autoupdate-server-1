@@ -11,9 +11,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/yinghuocho/autoupdate-server/args"
+	"github.com/yinghuocho/golibfq/utils"
 )
 
 const (
@@ -29,6 +32,8 @@ var (
 	flagGithubProject      = flag.String("n", "firefly-proxy", "Github project name.")
 	flagAssetDir           = flag.String("asset", "./assets/", "asset directory.")
 	flagPatchDir           = flag.String("patch", "./patches/", "patch directory.")
+	flagPidFile            = flag.String("pid", ".", "pid file")
+	flagLogFile            = flag.String("log", ".", "log file")
 	flagHelp               = flag.Bool("h", false, "Shows help.")
 )
 
@@ -144,6 +149,15 @@ func main() {
 		}
 	}
 
+	// initiate log file
+	logFile := utils.RotateLog(*flagLogFile, nil)
+	if *flagLogFile != "" && logFile == nil {
+		log.Printf("WARNING: fail to initiate log file")
+	}
+
+	// pid file
+	utils.SavePid(*flagPidFile)
+
 	// Creating release manager.
 	log.Printf("Starting release manager.")
 	releaseManager = NewReleaseManager(*flagGithubOrganization, *flagGithubProject, *flagAssetDir, *flagPatchDir, privKey)
@@ -162,7 +176,35 @@ func main() {
 	}
 
 	log.Printf("Starting up HTTP server at %s.", *flagLocalAddr)
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("ListenAndServe: ", err)
+	quit := make(chan bool)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil {
+			log.Printf("ListenAndServe: ", err)
+			close(quit)
+		}
+	}()
+
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
+
+	running := true
+	for running == true {
+		select {
+		case s := <-ch:
+			switch s {
+			case syscall.SIGHUP:
+				utils.RotateLog(*flagLogFile, logFile)
+			case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT:
+				log.Printf("Got signal \"%s\", exiting...", s)
+				running = false
+			}
+		case <-quit:
+			running = false
+		}
 	}
+	log.Printf("done")
 }
