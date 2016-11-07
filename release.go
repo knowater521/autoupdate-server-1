@@ -343,16 +343,18 @@ func (g *ReleaseManager) CheckForUpdate(p *args.Params) (res *args.Result, err e
 	var current *Asset
 	if current, err = g.lookupAssetWithChecksum(p.OS, p.Arch, p.Checksum); err != nil {
 		// No such asset with the given checksum, nothing to compare.
-		r := &args.Result{
-			Initiative: args.INITIATIVE_AUTO,
-			URL:        update.URL,
-			PatchType:  args.PATCHTYPE_NONE,
-			Version:    update.v.String(),
-			Checksum:   update.Checksum,
-			Signature:  update.Signature,
-		}
+		// r := &args.Result{
+		//	Initiative: args.INITIATIVE_AUTO,
+		//	URL:        update.URL,
+		//	PatchType:  args.PATCHTYPE_NONE,
+		//	Version:    update.v.String(),
+		//	Checksum:   update.Checksum,
+		//	Signature:  update.Signature,
+		// }
 
-		return r, nil
+		// return r, nil
+		log.Printf("warning: checksum not found in released versions")
+		return nil, ErrNoUpdateAvailable
 	}
 
 	// No update available.
